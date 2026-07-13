@@ -1,0 +1,540 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
+
+type DrawingTool = "pen" | "eraser";
+
+type DrawingCanvasProps = {
+    isRecording: boolean;
+    canPlayRecording: boolean;
+    getRecordingElapsedMs: () => number;
+    onPlayFromTime: (recordingTimeMs: number) => void;
+};
+
+type CanvasPoint = {
+    x: number;
+    y: number;
+    pressure: number;
+};
+
+type CanvasStroke = {
+    id: string;
+    tool: DrawingTool;
+    pointerType: string;
+    color: string;
+    baseWidth: number;
+    points: CanvasPoint[];
+    createdAt: number;
+    recordingTimeMs: number | null;
+};
+
+function formatRecordingTime(milliseconds: number) {
+    const totalTenths = Math.floor(milliseconds / 100);
+    const minutes = Math.floor(totalTenths / 600);
+    const seconds = Math.floor((totalTenths % 600) / 10);
+    const tenths = totalTenths % 10;
+
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(
+        2,
+        "0",
+    )}.${tenths}`;
+}
+
+function getCanvasPoint(
+    event: ReactPointerEvent<HTMLCanvasElement>,
+    canvas: HTMLCanvasElement,
+): CanvasPoint {
+    const rect = canvas.getBoundingClientRect();
+
+    return {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+        pressure:
+            event.pointerType === "pen"
+                ? Math.max(event.pressure, 0.1)
+                : 1,
+    };
+}
+
+function getStrokeWidth(stroke: CanvasStroke, point: CanvasPoint) {
+    if (stroke.tool === "eraser") {
+        return stroke.baseWidth;
+    }
+
+    return stroke.baseWidth * point.pressure;
+}
+
+function prepareContext(
+    context: CanvasRenderingContext2D,
+    stroke: CanvasStroke,
+) {
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    if (stroke.tool === "eraser") {
+        context.globalCompositeOperation = "destination-out";
+        context.strokeStyle = "rgba(0, 0, 0, 1)";
+        context.fillStyle = "rgba(0, 0, 0, 1)";
+    } else {
+        context.globalCompositeOperation = "source-over";
+        context.strokeStyle = stroke.color;
+        context.fillStyle = stroke.color;
+    }
+}
+
+function drawDot(
+    context: CanvasRenderingContext2D,
+    stroke: CanvasStroke,
+    point: CanvasPoint,
+) {
+    context.save();
+    prepareContext(context, stroke);
+
+    const radius = Math.max(getStrokeWidth(stroke, point) / 2, 1);
+
+    context.beginPath();
+    context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+}
+
+function drawSegment(
+    context: CanvasRenderingContext2D,
+    stroke: CanvasStroke,
+    previousPoint: CanvasPoint,
+    currentPoint: CanvasPoint,
+) {
+    context.save();
+    prepareContext(context, stroke);
+
+    context.lineWidth = Math.max(
+        getStrokeWidth(stroke, currentPoint),
+        1,
+    );
+
+    context.beginPath();
+    context.moveTo(previousPoint.x, previousPoint.y);
+    context.lineTo(currentPoint.x, currentPoint.y);
+    context.stroke();
+    context.restore();
+}
+
+function drawStroke(
+    context: CanvasRenderingContext2D,
+    stroke: CanvasStroke,
+) {
+    if (stroke.points.length === 0) {
+        return;
+    }
+
+    if (stroke.points.length === 1) {
+        drawDot(context, stroke, stroke.points[0]);
+        return;
+    }
+
+    for (let index = 1; index < stroke.points.length; index += 1) {
+        drawSegment(
+            context,
+            stroke,
+            stroke.points[index - 1],
+            stroke.points[index],
+        );
+    }
+}
+
+export default function DrawingCanvas({
+    isRecording,
+    canPlayRecording,
+    getRecordingElapsedMs,
+    onPlayFromTime,
+}: DrawingCanvasProps) {
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const drawingRef = useRef(false);
+    const currentStrokeRef = useRef<CanvasStroke | null>(null);
+    const strokesRef = useRef<CanvasStroke[]>([]);
+
+    const [tool, setTool] = useState<DrawingTool>("pen");
+    const [strokeCount, setStrokeCount] = useState(0);
+    const [strokeSnapshot, setStrokeSnapshot] = useState<
+        CanvasStroke[]
+    >([]);
+    const [lastPointerType, setLastPointerType] =
+        useState<string>("없음");
+
+    const redrawCanvas = useCallback(() => {
+        const canvas = canvasRef.current;
+
+        if (!canvas) {
+            return;
+        }
+
+        const context = canvas.getContext("2d");
+
+        if (!context) {
+            return;
+        }
+
+        context.clearRect(
+            0,
+            0,
+            canvas.clientWidth,
+            canvas.clientHeight,
+        );
+
+        strokesRef.current.forEach((stroke) => {
+            drawStroke(context, stroke);
+        });
+    }, []);
+
+    useEffect(() => {
+        const canvas = canvasRef.current;
+
+        if (!canvas) {
+            return;
+        }
+
+        const resizeCanvas = () => {
+            const rect = canvas.getBoundingClientRect();
+            const devicePixelRatio = window.devicePixelRatio || 1;
+
+            canvas.width = Math.max(
+                1,
+                Math.round(rect.width * devicePixelRatio),
+            );
+
+            canvas.height = Math.max(
+                1,
+                Math.round(rect.height * devicePixelRatio),
+            );
+
+            const context = canvas.getContext("2d");
+
+            if (!context) {
+                return;
+            }
+
+            context.setTransform(
+                devicePixelRatio,
+                0,
+                0,
+                devicePixelRatio,
+                0,
+                0,
+            );
+
+            redrawCanvas();
+        };
+
+        resizeCanvas();
+
+        const resizeObserver = new ResizeObserver(resizeCanvas);
+        resizeObserver.observe(canvas);
+
+        return () => {
+            resizeObserver.disconnect();
+        };
+    }, [redrawCanvas]);
+
+    const startDrawing = (
+        event: ReactPointerEvent<HTMLCanvasElement>,
+    ) => {
+        const canvas = canvasRef.current;
+
+        if (!canvas || !event.isPrimary) {
+            return;
+        }
+
+        event.preventDefault();
+        canvas.setPointerCapture(event.pointerId);
+
+        const point = getCanvasPoint(event, canvas);
+
+        const newStroke: CanvasStroke = {
+            id: crypto.randomUUID(),
+            tool,
+            pointerType: event.pointerType || "unknown",
+            color: "#0f172a",
+            baseWidth: tool === "eraser" ? 26 : 4,
+            points: [point],
+            createdAt: performance.now(),
+            recordingTimeMs:
+                tool === "pen" && isRecording
+                    ? getRecordingElapsedMs()
+                    : null,
+        };
+
+        drawingRef.current = true;
+        currentStrokeRef.current = newStroke;
+        setLastPointerType(newStroke.pointerType);
+
+        const context = canvas.getContext("2d");
+
+        if (context) {
+            drawDot(context, newStroke, point);
+        }
+    };
+
+    const continueDrawing = (
+        event: ReactPointerEvent<HTMLCanvasElement>,
+    ) => {
+        const canvas = canvasRef.current;
+        const currentStroke = currentStrokeRef.current;
+
+        if (
+            !canvas ||
+            !drawingRef.current ||
+            !currentStroke ||
+            !event.isPrimary
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const currentPoint = getCanvasPoint(event, canvas);
+        const previousPoint =
+            currentStroke.points[currentStroke.points.length - 1];
+
+        currentStroke.points.push(currentPoint);
+
+        const context = canvas.getContext("2d");
+
+        if (context) {
+            drawSegment(
+                context,
+                currentStroke,
+                previousPoint,
+                currentPoint,
+            );
+        }
+    };
+
+    const finishDrawing = (
+        event: ReactPointerEvent<HTMLCanvasElement>,
+    ) => {
+        const canvas = canvasRef.current;
+        const currentStroke = currentStrokeRef.current;
+
+        if (!canvas || !drawingRef.current || !currentStroke) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const nextStrokes = [
+            ...strokesRef.current,
+            currentStroke,
+        ];
+
+        strokesRef.current = nextStrokes;
+        setStrokeSnapshot(nextStrokes);
+        setStrokeCount(nextStrokes.length);
+
+        drawingRef.current = false;
+        currentStrokeRef.current = null;
+
+        if (canvas.hasPointerCapture(event.pointerId)) {
+            canvas.releasePointerCapture(event.pointerId);
+        }
+    };
+
+    const undoLastStroke = () => {
+        const nextStrokes = strokesRef.current.slice(0, -1);
+
+        strokesRef.current = nextStrokes;
+        setStrokeSnapshot(nextStrokes);
+        setStrokeCount(nextStrokes.length);
+        redrawCanvas();
+    };
+
+    const clearCanvas = () => {
+        strokesRef.current = [];
+        setStrokeSnapshot([]);
+        setStrokeCount(0);
+        redrawCanvas();
+    };
+
+    const timedStrokes = strokeSnapshot
+        .filter(
+            (stroke) =>
+                stroke.tool === "pen" &&
+                stroke.recordingTimeMs !== null,
+        )
+        .slice()
+        .reverse();
+
+    return (
+        <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                    <h2 className="text-xl font-semibold">회의 필기판</h2>
+
+                    <p className="mt-1 text-sm text-slate-500">
+                        녹음 중 작성한 필기에는 해당 녹음 시각이
+                        자동으로 저장됩니다.
+                    </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setTool("pen")}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold ${tool === "pen"
+                                ? "bg-slate-900 text-white"
+                                : "bg-slate-100 text-slate-700"
+                            }`}
+                    >
+                        펜
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={() => setTool("eraser")}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold ${tool === "eraser"
+                                ? "bg-slate-900 text-white"
+                                : "bg-slate-100 text-slate-700"
+                            }`}
+                    >
+                        지우개
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={undoLastStroke}
+                        disabled={strokeCount === 0}
+                        className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        실행 취소
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={clearCanvas}
+                        disabled={strokeCount === 0}
+                        className="rounded-lg border border-red-200 px-4 py-2 text-sm font-semibold text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        전체 지우기
+                    </button>
+                </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-4 text-sm text-slate-500">
+                <span>
+                    입력 획 수:{" "}
+                    <strong className="text-slate-800">{strokeCount}</strong>
+                </span>
+
+                <span>
+                    녹음 연결 획 수:{" "}
+                    <strong className="text-slate-800">
+                        {timedStrokes.length}
+                    </strong>
+                </span>
+
+                <span>
+                    마지막 입력기기:{" "}
+                    <strong className="text-slate-800">
+                        {lastPointerType}
+                    </strong>
+                </span>
+
+                <span>
+                    현재 상태:{" "}
+                    <strong
+                        className={
+                            isRecording ? "text-red-600" : "text-slate-800"
+                        }
+                    >
+                        {isRecording ? "녹음과 필기 연결 중" : "녹음 대기"}
+                    </strong>
+                </span>
+            </div>
+
+            <div className="mt-4 overflow-hidden rounded-xl border border-slate-300 bg-white">
+                <canvas
+                    ref={canvasRef}
+                    onPointerDown={startDrawing}
+                    onPointerMove={continueDrawing}
+                    onPointerUp={finishDrawing}
+                    onPointerCancel={finishDrawing}
+                    onContextMenu={(event) => event.preventDefault()}
+                    className="block h-[520px] w-full cursor-crosshair bg-white"
+                    style={{ touchAction: "none" }}
+                    aria-label="회의 필기 영역"
+                />
+            </div>
+
+            <div className="mt-6 border-t border-slate-200 pt-6">
+                <div className="flex items-center justify-between gap-4">
+                    <div>
+                        <h3 className="text-lg font-semibold">
+                            녹음과 연결된 필기
+                        </h3>
+
+                        <p className="mt-1 text-sm text-slate-500">
+                            각 항목을 누르면 필기한 시점보다 5초 전부터
+                            녹음이 재생됩니다.
+                        </p>
+                    </div>
+
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-600">
+                        {timedStrokes.length}개
+                    </span>
+                </div>
+
+                {timedStrokes.length === 0 ? (
+                    <div className="mt-4 rounded-xl border border-dashed border-slate-300 p-5 text-sm text-slate-500">
+                        녹음을 시작한 상태에서 필기하면 이곳에 연결
+                        시각이 표시됩니다.
+                    </div>
+                ) : (
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        {timedStrokes.map((stroke, index) => {
+                            const recordingTimeMs = stroke.recordingTimeMs;
+
+                            if (recordingTimeMs === null) {
+                                return null;
+                            }
+
+                            return (
+                                <div
+                                    key={stroke.id}
+                                    className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 p-4"
+                                >
+                                    <div>
+                                        <p className="text-sm font-semibold text-slate-800">
+                                            필기 획 {timedStrokes.length - index}
+                                        </p>
+
+                                        <p className="mt-1 font-mono text-sm text-slate-500">
+                                            기록 시각{" "}
+                                            {formatRecordingTime(recordingTimeMs)}
+                                        </p>
+                                    </div>
+
+                                    <button
+                                        type="button"
+                                        disabled={!canPlayRecording}
+                                        onClick={() =>
+                                            onPlayFromTime(recordingTimeMs)
+                                        }
+                                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                                    >
+                                        5초 전부터 재생
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+
+            <p className="mt-4 text-xs text-slate-500">
+                현재는 펜을 뗄 때마다 하나의 필기 획으로 저장됩니다.
+                이후 단계에서 가까운 획들을 하나의 단어 또는 문구로
+                묶습니다.
+            </p>
+        </section>
+    );
+}
