@@ -10,7 +10,7 @@ import {
 
 import type { PointerEvent as ReactPointerEvent } from "react";
 
-type DrawingTool = "pen" | "eraser";
+type DrawingTool = "pen" | "eraser" | "select";
 
 type DrawingCanvasProps = {
     isRecording: boolean;
@@ -53,6 +53,7 @@ type StrokeGroup = {
 
 const GROUP_TIME_GAP_MS = 1500;
 const GROUP_DISTANCE_PX = 80;
+const SELECT_PADDING_PX = 14;
 
 function formatRecordingTime(milliseconds: number) {
     const totalTenths = Math.floor(milliseconds / 100);
@@ -296,6 +297,11 @@ export default function DrawingCanvas({
     const [strokeSnapshot, setStrokeSnapshot] = useState<
         CanvasStroke[]
     >([]);
+
+    const [selectedGroupId, setSelectedGroupId] = useState<
+        string | null
+    >(null);
+
     const [lastPointerType, setLastPointerType] =
         useState<string>("없음");
 
@@ -383,6 +389,12 @@ export default function DrawingCanvas({
         }
 
         event.preventDefault();
+
+        if (tool === "select") {
+            setSelectedGroupId(null);
+            return;
+        }
+
         canvas.setPointerCapture(event.pointerId);
 
         const point = getCanvasPoint(event, canvas);
@@ -482,6 +494,7 @@ export default function DrawingCanvas({
         strokesRef.current = nextStrokes;
         setStrokeSnapshot(nextStrokes);
         setStrokeCount(nextStrokes.length);
+        setSelectedGroupId(null);
         redrawCanvas();
     };
 
@@ -489,6 +502,7 @@ export default function DrawingCanvas({
         strokesRef.current = [];
         setStrokeSnapshot([]);
         setStrokeCount(0);
+        setSelectedGroupId(null);
         redrawCanvas();
     };
 
@@ -501,6 +515,13 @@ export default function DrawingCanvas({
         () => [...strokeGroups].reverse(),
         [strokeGroups],
     );
+    const selectStrokeGroup = (group: StrokeGroup) => {
+        setSelectedGroupId(group.id);
+
+        if (canPlayRecording) {
+            onPlayFromTime(group.recordingTimeMs);
+        }
+    };
 
     return (
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -535,6 +556,17 @@ export default function DrawingCanvas({
                             }`}
                     >
                         지우개
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={() => setTool("select")}
+                        className={`rounded-lg px-4 py-2 text-sm font-semibold ${tool === "select"
+                            ? "bg-blue-600 text-white"
+                            : "bg-slate-100 text-slate-700"
+                            }`}
+                    >
+                        선택
                     </button>
 
                     <button
@@ -578,6 +610,17 @@ export default function DrawingCanvas({
                 </span>
 
                 <span>
+                    현재 도구:{" "}
+                    <strong className="text-slate-800">
+                        {tool === "pen"
+                            ? "펜"
+                            : tool === "eraser"
+                                ? "지우개"
+                                : "선택"}
+                    </strong>
+                </span>
+
+                <span>
                     현재 상태:{" "}
                     <strong
                         className={
@@ -589,7 +632,7 @@ export default function DrawingCanvas({
                 </span>
             </div>
 
-            <div className="mt-4 overflow-hidden rounded-xl border border-slate-300 bg-white">
+            <div className="relative mt-4 overflow-hidden rounded-xl border border-slate-300 bg-white">
                 <canvas
                     ref={canvasRef}
                     onPointerDown={startDrawing}
@@ -597,10 +640,62 @@ export default function DrawingCanvas({
                     onPointerUp={finishDrawing}
                     onPointerCancel={finishDrawing}
                     onContextMenu={(event) => event.preventDefault()}
-                    className="block h-[520px] w-full cursor-crosshair bg-white"
+                    className={`block h-[520px] w-full bg-white ${tool === "select"
+                            ? "cursor-pointer"
+                            : "cursor-crosshair"
+                        }`}
                     style={{ touchAction: "none" }}
                     aria-label="회의 필기 영역"
                 />
+
+                {tool === "select" &&
+                    strokeGroups.map((group, index) => {
+                        const isSelected = selectedGroupId === group.id;
+
+                        const left = Math.max(
+                            group.bounds.minX - SELECT_PADDING_PX,
+                            0,
+                        );
+
+                        const top = Math.max(
+                            group.bounds.minY - SELECT_PADDING_PX,
+                            0,
+                        );
+
+                        const width = Math.max(
+                            group.bounds.maxX -
+                            group.bounds.minX +
+                            SELECT_PADDING_PX * 2,
+                            32,
+                        );
+
+                        const height = Math.max(
+                            group.bounds.maxY -
+                            group.bounds.minY +
+                            SELECT_PADDING_PX * 2,
+                            32,
+                        );
+
+                        return (
+                            <button
+                                key={group.id}
+                                type="button"
+                                onClick={() => selectStrokeGroup(group)}
+                                className={`absolute z-10 rounded-lg border-2 transition ${isSelected
+                                        ? "border-blue-600 bg-blue-500/20"
+                                        : "border-slate-400/70 bg-slate-100/10 hover:border-blue-400 hover:bg-blue-100/30"
+                                    }`}
+                                style={{
+                                    left,
+                                    top,
+                                    width,
+                                    height,
+                                }}
+                                aria-label={`필기 문구 ${index + 1} 재생`}
+                                title="이 문구의 녹음 위치 재생"
+                            />
+                        );
+                    })}
             </div>
 
             <div className="mt-6 border-t border-slate-200 pt-6">
@@ -631,7 +726,10 @@ export default function DrawingCanvas({
                         {displayedStrokeGroups.map((group, index) => (
                             <div
                                 key={group.id}
-                                className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 p-4"
+                                className={`flex items-center justify-between gap-4 rounded-xl border p-4 ${selectedGroupId === group.id
+                                        ? "border-blue-500 bg-blue-50"
+                                        : "border-slate-200"
+                                    }`}
                             >
                                 <div>
                                     <p className="text-sm font-semibold text-slate-800">
@@ -652,9 +750,7 @@ export default function DrawingCanvas({
                                 <button
                                     type="button"
                                     disabled={!canPlayRecording}
-                                    onClick={() =>
-                                        onPlayFromTime(group.recordingTimeMs)
-                                    }
+                                    onClick={() => selectStrokeGroup(group)}
                                     className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
                                 >
                                     5초 전부터 재생
@@ -666,9 +762,9 @@ export default function DrawingCanvas({
             </div>
 
             <p className="mt-4 text-xs text-slate-500">
-                1.5초 이내에 가까운 위치에 연속해서 작성한 획은
-                하나의 필기 문구로 자동 묶입니다. 다음 단계에서는
-                문구 영역을 캔버스에서 직접 선택할 수 있게 만듭니다.
+                선택 도구를 누르면 문구별 선택 영역이 표시됩니다.
+                문구를 직접 누르면 필기한 시점보다 5초 전부터
+                녹음이 재생됩니다.
             </p>
         </section>
     );
