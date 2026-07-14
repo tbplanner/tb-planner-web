@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
+
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 type DrawingTool = "pen" | "eraser";
@@ -28,6 +35,24 @@ type CanvasStroke = {
     createdAt: number;
     recordingTimeMs: number | null;
 };
+type StrokeBounds = {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+};
+
+type StrokeGroup = {
+    id: string;
+    strokeIds: string[];
+    bounds: StrokeBounds;
+    recordingTimeMs: number;
+    createdAt: number;
+    lastCreatedAt: number;
+};
+
+const GROUP_TIME_GAP_MS = 1500;
+const GROUP_DISTANCE_PX = 80;
 
 function formatRecordingTime(milliseconds: number) {
     const totalTenths = Math.floor(milliseconds / 100);
@@ -39,6 +64,118 @@ function formatRecordingTime(milliseconds: number) {
         2,
         "0",
     )}.${tenths}`;
+}
+function getStrokeBounds(stroke: CanvasStroke): StrokeBounds {
+    const firstPoint = stroke.points[0];
+
+    if (!firstPoint) {
+        return {
+            minX: 0,
+            minY: 0,
+            maxX: 0,
+            maxY: 0,
+        };
+    }
+
+    return stroke.points.reduce<StrokeBounds>(
+        (bounds, point) => ({
+            minX: Math.min(bounds.minX, point.x),
+            minY: Math.min(bounds.minY, point.y),
+            maxX: Math.max(bounds.maxX, point.x),
+            maxY: Math.max(bounds.maxY, point.y),
+        }),
+        {
+            minX: firstPoint.x,
+            minY: firstPoint.y,
+            maxX: firstPoint.x,
+            maxY: firstPoint.y,
+        },
+    );
+}
+
+function mergeBounds(
+    firstBounds: StrokeBounds,
+    secondBounds: StrokeBounds,
+): StrokeBounds {
+    return {
+        minX: Math.min(firstBounds.minX, secondBounds.minX),
+        minY: Math.min(firstBounds.minY, secondBounds.minY),
+        maxX: Math.max(firstBounds.maxX, secondBounds.maxX),
+        maxY: Math.max(firstBounds.maxY, secondBounds.maxY),
+    };
+}
+
+function getBoundsDistance(
+    firstBounds: StrokeBounds,
+    secondBounds: StrokeBounds,
+) {
+    const horizontalDistance = Math.max(
+        firstBounds.minX - secondBounds.maxX,
+        secondBounds.minX - firstBounds.maxX,
+        0,
+    );
+
+    const verticalDistance = Math.max(
+        firstBounds.minY - secondBounds.maxY,
+        secondBounds.minY - firstBounds.maxY,
+        0,
+    );
+
+    return Math.hypot(horizontalDistance, verticalDistance);
+}
+
+function buildStrokeGroups(
+    strokes: CanvasStroke[],
+): StrokeGroup[] {
+    const groups: StrokeGroup[] = [];
+
+    strokes.forEach((stroke) => {
+        if (
+            stroke.tool !== "pen" ||
+            stroke.recordingTimeMs === null ||
+            stroke.points.length === 0
+        ) {
+            return;
+        }
+
+        const bounds = getStrokeBounds(stroke);
+        const previousGroup = groups[groups.length - 1];
+
+        const isWithinTime =
+            previousGroup !== undefined &&
+            stroke.createdAt - previousGroup.lastCreatedAt <=
+            GROUP_TIME_GAP_MS;
+
+        const isWithinDistance =
+            previousGroup !== undefined &&
+            getBoundsDistance(previousGroup.bounds, bounds) <=
+            GROUP_DISTANCE_PX;
+
+        if (
+            previousGroup &&
+            isWithinTime &&
+            isWithinDistance
+        ) {
+            previousGroup.strokeIds.push(stroke.id);
+            previousGroup.bounds = mergeBounds(
+                previousGroup.bounds,
+                bounds,
+            );
+            previousGroup.lastCreatedAt = stroke.createdAt;
+            return;
+        }
+
+        groups.push({
+            id: `group-${stroke.id}`,
+            strokeIds: [stroke.id],
+            bounds,
+            recordingTimeMs: stroke.recordingTimeMs,
+            createdAt: stroke.createdAt,
+            lastCreatedAt: stroke.createdAt,
+        });
+    });
+
+    return groups;
 }
 
 function getCanvasPoint(
@@ -355,14 +492,15 @@ export default function DrawingCanvas({
         redrawCanvas();
     };
 
-    const timedStrokes = strokeSnapshot
-        .filter(
-            (stroke) =>
-                stroke.tool === "pen" &&
-                stroke.recordingTimeMs !== null,
-        )
-        .slice()
-        .reverse();
+    const strokeGroups = useMemo(
+        () => buildStrokeGroups(strokeSnapshot),
+        [strokeSnapshot],
+    );
+
+    const displayedStrokeGroups = useMemo(
+        () => [...strokeGroups].reverse(),
+        [strokeGroups],
+    );
 
     return (
         <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -381,8 +519,8 @@ export default function DrawingCanvas({
                         type="button"
                         onClick={() => setTool("pen")}
                         className={`rounded-lg px-4 py-2 text-sm font-semibold ${tool === "pen"
-                                ? "bg-slate-900 text-white"
-                                : "bg-slate-100 text-slate-700"
+                            ? "bg-slate-900 text-white"
+                            : "bg-slate-100 text-slate-700"
                             }`}
                     >
                         펜
@@ -392,8 +530,8 @@ export default function DrawingCanvas({
                         type="button"
                         onClick={() => setTool("eraser")}
                         className={`rounded-lg px-4 py-2 text-sm font-semibold ${tool === "eraser"
-                                ? "bg-slate-900 text-white"
-                                : "bg-slate-100 text-slate-700"
+                            ? "bg-slate-900 text-white"
+                            : "bg-slate-100 text-slate-700"
                             }`}
                     >
                         지우개
@@ -426,9 +564,9 @@ export default function DrawingCanvas({
                 </span>
 
                 <span>
-                    녹음 연결 획 수:{" "}
+                    필기 문구 수:{" "}
                     <strong className="text-slate-800">
-                        {timedStrokes.length}
+                        {strokeGroups.length}
                     </strong>
                 </span>
 
@@ -479,61 +617,58 @@ export default function DrawingCanvas({
                     </div>
 
                     <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-600">
-                        {timedStrokes.length}개
+                        {strokeGroups.length}개
                     </span>
                 </div>
 
-                {timedStrokes.length === 0 ? (
+                {displayedStrokeGroups.length === 0 ? (
                     <div className="mt-4 rounded-xl border border-dashed border-slate-300 p-5 text-sm text-slate-500">
                         녹음을 시작한 상태에서 필기하면 이곳에 연결
-                        시각이 표시됩니다.
+                        문구와 시각이 표시됩니다.
                     </div>
                 ) : (
                     <div className="mt-4 grid gap-3 md:grid-cols-2">
-                        {timedStrokes.map((stroke, index) => {
-                            const recordingTimeMs = stroke.recordingTimeMs;
+                        {displayedStrokeGroups.map((group, index) => (
+                            <div
+                                key={group.id}
+                                className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 p-4"
+                            >
+                                <div>
+                                    <p className="text-sm font-semibold text-slate-800">
+                                        필기 문구{" "}
+                                        {displayedStrokeGroups.length - index}
+                                    </p>
 
-                            if (recordingTimeMs === null) {
-                                return null;
-                            }
+                                    <p className="mt-1 text-xs text-slate-500">
+                                        포함된 획: {group.strokeIds.length}개
+                                    </p>
 
-                            return (
-                                <div
-                                    key={stroke.id}
-                                    className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 p-4"
-                                >
-                                    <div>
-                                        <p className="text-sm font-semibold text-slate-800">
-                                            필기 획 {timedStrokes.length - index}
-                                        </p>
-
-                                        <p className="mt-1 font-mono text-sm text-slate-500">
-                                            기록 시각{" "}
-                                            {formatRecordingTime(recordingTimeMs)}
-                                        </p>
-                                    </div>
-
-                                    <button
-                                        type="button"
-                                        disabled={!canPlayRecording}
-                                        onClick={() =>
-                                            onPlayFromTime(recordingTimeMs)
-                                        }
-                                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                                    >
-                                        5초 전부터 재생
-                                    </button>
+                                    <p className="mt-1 font-mono text-sm text-slate-500">
+                                        기록 시각{" "}
+                                        {formatRecordingTime(group.recordingTimeMs)}
+                                    </p>
                                 </div>
-                            );
-                        })}
+
+                                <button
+                                    type="button"
+                                    disabled={!canPlayRecording}
+                                    onClick={() =>
+                                        onPlayFromTime(group.recordingTimeMs)
+                                    }
+                                    className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
+                                >
+                                    5초 전부터 재생
+                                </button>
+                            </div>
+                        ))}
                     </div>
                 )}
             </div>
 
             <p className="mt-4 text-xs text-slate-500">
-                현재는 펜을 뗄 때마다 하나의 필기 획으로 저장됩니다.
-                이후 단계에서 가까운 획들을 하나의 단어 또는 문구로
-                묶습니다.
+                1.5초 이내에 가까운 위치에 연속해서 작성한 획은
+                하나의 필기 문구로 자동 묶입니다. 다음 단계에서는
+                문구 영역을 캔버스에서 직접 선택할 수 있게 만듭니다.
             </p>
         </section>
     );
