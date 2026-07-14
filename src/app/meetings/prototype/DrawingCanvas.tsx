@@ -16,7 +16,11 @@ type DrawingCanvasProps = {
     isRecording: boolean;
     canPlayRecording: boolean;
     getRecordingElapsedMs: () => number;
-    onPlayFromTime: (recordingTimeMs: number) => void;
+    onPlayFromTime: (
+        recordingTimeMs: number,
+    ) => void;
+    currentPlaybackTimeMs: number;
+    isAudioPlaying: boolean;
 };
 
 type CanvasPoint = {
@@ -286,6 +290,8 @@ export default function DrawingCanvas({
     canPlayRecording,
     getRecordingElapsedMs,
     onPlayFromTime,
+    currentPlaybackTimeMs,
+    isAudioPlaying,
 }: DrawingCanvasProps) {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const drawingRef = useRef(false);
@@ -515,6 +521,39 @@ export default function DrawingCanvas({
         () => [...strokeGroups].reverse(),
         [strokeGroups],
     );
+
+    const activePlaybackGroupId = useMemo(() => {
+        if (
+            !isAudioPlaying ||
+            strokeGroups.length === 0
+        ) {
+            return null;
+        }
+
+        const activeGroup = [...strokeGroups]
+            .reverse()
+            .find((group) => {
+                const highlightStartMs = Math.max(
+                    group.recordingTimeMs - 5000,
+                    0,
+                );
+
+                return (
+                    currentPlaybackTimeMs >=
+                    highlightStartMs
+                );
+            });
+
+        return activeGroup?.id ?? null;
+    }, [
+        currentPlaybackTimeMs,
+        isAudioPlaying,
+        strokeGroups,
+    ]);
+
+    const highlightedGroupId =
+        activePlaybackGroupId ?? selectedGroupId;
+
     const selectStrokeGroup = (group: StrokeGroup) => {
         setSelectedGroupId(group.id);
 
@@ -641,61 +680,66 @@ export default function DrawingCanvas({
                     onPointerCancel={finishDrawing}
                     onContextMenu={(event) => event.preventDefault()}
                     className={`block h-[520px] w-full bg-white ${tool === "select"
-                            ? "cursor-pointer"
-                            : "cursor-crosshair"
+                        ? "cursor-pointer"
+                        : "cursor-crosshair"
                         }`}
                     style={{ touchAction: "none" }}
                     aria-label="회의 필기 영역"
                 />
 
-                {tool === "select" &&
-                    strokeGroups.map((group, index) => {
-                        const isSelected = selectedGroupId === group.id;
+                {strokeGroups.map((group, index) => {
+                    const isSelected =
+                        highlightedGroupId === group.id;
 
-                        const left = Math.max(
-                            group.bounds.minX - SELECT_PADDING_PX,
-                            0,
-                        );
+                    const left = Math.max(
+                        group.bounds.minX - SELECT_PADDING_PX,
+                        0,
+                    );
 
-                        const top = Math.max(
-                            group.bounds.minY - SELECT_PADDING_PX,
-                            0,
-                        );
+                    const top = Math.max(
+                        group.bounds.minY - SELECT_PADDING_PX,
+                        0,
+                    );
 
-                        const width = Math.max(
-                            group.bounds.maxX -
-                            group.bounds.minX +
-                            SELECT_PADDING_PX * 2,
-                            32,
-                        );
+                    const width = Math.max(
+                        group.bounds.maxX -
+                        group.bounds.minX +
+                        SELECT_PADDING_PX * 2,
+                        32,
+                    );
 
-                        const height = Math.max(
-                            group.bounds.maxY -
-                            group.bounds.minY +
-                            SELECT_PADDING_PX * 2,
-                            32,
-                        );
+                    const height = Math.max(
+                        group.bounds.maxY -
+                        group.bounds.minY +
+                        SELECT_PADDING_PX * 2,
+                        32,
+                    );
 
-                        return (
-                            <button
-                                key={group.id}
-                                type="button"
-                                onClick={() => selectStrokeGroup(group)}
-                                className={`absolute z-10 rounded-lg border-2 transition ${isSelected
-                                        ? "border-blue-600 bg-blue-500/20"
-                                        : "border-slate-400/70 bg-slate-100/10 hover:border-blue-400 hover:bg-blue-100/30"
-                                    }`}
-                                style={{
-                                    left,
-                                    top,
-                                    width,
-                                    height,
-                                }}
-                                aria-label={`필기 문구 ${index + 1} 재생`}
-                                title="이 문구의 녹음 위치 재생"
-                            />
-                        );
-                    })}
+                    return (
+                        <button
+                            key={group.id}
+                            type="button"
+                            onClick={() => selectStrokeGroup(group)}
+                            className={`absolute z-10 rounded-lg border-2 transition ${tool === "select"
+                                    ? ""
+                                    : "pointer-events-none"
+                                } ${isSelected
+                                    ? "border-blue-600 bg-blue-500/20"
+                                    : tool === "select"
+                                        ? "border-slate-400/70 bg-slate-100/10 hover:border-blue-400 hover:bg-blue-100/30"
+                                        : "border-transparent bg-transparent"
+                                }`}
+                            style={{
+                                left,
+                                top,
+                                width,
+                                height,
+                            }}
+                            aria-label={`필기 문구 ${index + 1} 재생`}
+                            title="이 문구의 녹음 위치 재생"
+                        />
+                    );
+                })}
             </div>
 
             <div className="mt-6 border-t border-slate-200 pt-6">
@@ -726,9 +770,9 @@ export default function DrawingCanvas({
                         {displayedStrokeGroups.map((group, index) => (
                             <div
                                 key={group.id}
-                                className={`flex items-center justify-between gap-4 rounded-xl border p-4 ${selectedGroupId === group.id
-                                        ? "border-blue-500 bg-blue-50"
-                                        : "border-slate-200"
+                                className={`flex items-center justify-between gap-4 rounded-xl border p-4 ${highlightedGroupId === group.id
+                                    ? "border-blue-500 bg-blue-50"
+                                    : "border-slate-200"
                                     }`}
                             >
                                 <div>
