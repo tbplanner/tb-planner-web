@@ -21,6 +21,10 @@ type DrawingCanvasProps = {
     ) => void;
     currentPlaybackTimeMs: number;
     isAudioPlaying: boolean;
+    strokes: CanvasStroke[];
+    onStrokesChange: (
+        strokes: CanvasStroke[],
+    ) => void;
 };
 
 type CanvasPoint = {
@@ -29,7 +33,7 @@ type CanvasPoint = {
     pressure: number;
 };
 
-type CanvasStroke = {
+export type CanvasStroke = {
     id: string;
     tool: DrawingTool;
     pointerType: string;
@@ -292,6 +296,8 @@ export default function DrawingCanvas({
     onPlayFromTime,
     currentPlaybackTimeMs,
     isAudioPlaying,
+    strokes,
+    onStrokesChange,
 }: DrawingCanvasProps) {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const drawingRef = useRef(false);
@@ -384,6 +390,30 @@ export default function DrawingCanvas({
             resizeObserver.disconnect();
         };
     }, [redrawCanvas]);
+
+useEffect(() => {
+  const loadedStrokes = strokes.map((stroke) => ({
+    ...stroke,
+    points: stroke.points.map((point) => ({
+      ...point,
+    })),
+  }));
+
+  const animationFrameId =
+    window.requestAnimationFrame(() => {
+      strokesRef.current = loadedStrokes;
+      setStrokeSnapshot(loadedStrokes);
+      setStrokeCount(loadedStrokes.length);
+      setSelectedGroupId(null);
+      redrawCanvas();
+    });
+
+  return () => {
+    window.cancelAnimationFrame(
+      animationFrameId,
+    );
+  };
+}, [strokes, redrawCanvas]);
 
     const startDrawing = (
         event: ReactPointerEvent<HTMLCanvasElement>,
@@ -485,6 +515,7 @@ export default function DrawingCanvas({
         strokesRef.current = nextStrokes;
         setStrokeSnapshot(nextStrokes);
         setStrokeCount(nextStrokes.length);
+        onStrokesChange(nextStrokes);
 
         drawingRef.current = false;
         currentStrokeRef.current = null;
@@ -495,12 +526,14 @@ export default function DrawingCanvas({
     };
 
     const undoLastStroke = () => {
-        const nextStrokes = strokesRef.current.slice(0, -1);
+        const nextStrokes =
+            strokesRef.current.slice(0, -1);
 
         strokesRef.current = nextStrokes;
         setStrokeSnapshot(nextStrokes);
         setStrokeCount(nextStrokes.length);
         setSelectedGroupId(null);
+        onStrokesChange(nextStrokes);
         redrawCanvas();
     };
 
@@ -509,6 +542,7 @@ export default function DrawingCanvas({
         setStrokeSnapshot([]);
         setStrokeCount(0);
         setSelectedGroupId(null);
+        onStrokesChange([]);
         redrawCanvas();
     };
 
@@ -721,8 +755,8 @@ export default function DrawingCanvas({
                             type="button"
                             onClick={() => selectStrokeGroup(group)}
                             className={`absolute z-10 rounded-lg border-2 transition ${tool === "select"
-                                    ? ""
-                                    : "pointer-events-none"
+                                ? ""
+                                : "pointer-events-none"
                                 } ${isSelected
                                     ? "border-blue-600 bg-blue-500/20"
                                     : tool === "select"
